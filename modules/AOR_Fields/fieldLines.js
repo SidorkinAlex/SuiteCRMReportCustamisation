@@ -89,6 +89,16 @@ var FieldLineHandler = {
 
 };
 
+YUI().use('sortable', function(Y) {
+    var sortable = new Y.Sortable({
+        container: '#fieldLines',
+        nodes: 'tbody',
+        opacity: '.1'
+    });
+
+    Y.DD.DDM.on('drag:end', fieldSort);
+});
+
 function loadFieldLine(field){
 
     var prefix = 'aor_fields_';
@@ -99,7 +109,6 @@ function loadFieldLine(field){
     for(var a in field){
 
         var elem = document.getElementById(prefix + a + ln);
-
         if(elem != null){
             if(a === 'field_order'){
                 $('#'+prefix+a+ln).val(ln);
@@ -108,6 +117,24 @@ function loadFieldLine(field){
             }else if(elem.type == 'checkbox'){
                 elem.checked = field[a] == 1;
             } else {
+                if (a === 'select_sql') {
+                    if (!$('#select_sql_dialog').length) {
+                        $('body').append(`<div id="select_sql_dialog" class="el-dialog__wrapper" onclick="closeSqlDialog(event);" style="z-index: 2003;"><div class="el-dialog">
+                        <div class="el-dialog__header"><button type="button" aria-label="Close" class="el-dialog__headerbtn"
+                        onclick="closeSqlDialog(event);"><i class="el-dialog__close el-icon el-icon-close"></i></button></div>
+                        <div class="el-dialog__body"><div class="el-form-item">${SUGAR.language.get('AOR_Fields', 'LBL_SELECT_SQL')}:</div><textarea name="select_sql" rows="10" class="el-textarea"></textarea></div></div></div>`);
+                        $('#select_sql_dialog')
+                            .css({ 'display': 'none', 'background': '#80808087' })
+                            .find('.el-dialog')
+                            .css({ 'margin-top': '15vh', 'width': '50%' });
+                    }
+
+                    $('#'+prefix+a+ln)
+                        .val(field[a])
+                        .prev()
+                        .find('button')
+                        .css(!(field[a]) ? {'opacity': '0.6'} : {});
+                }
                 elem.value = field[a];
             }
         }
@@ -261,17 +288,11 @@ function insertFieldHeader(){
     var i=x.insertCell(9);
     i.innerHTML=SUGAR.language.get('AOR_Fields', 'LBL_FORMAT');
 
-    var h=x.insertCell(10);
-    h.innerHTML=SUGAR.language.get('AOR_Fields', 'LBL_TOTAL');
+    var h1=x.insertCell(10);
+    h1.innerHTML=SUGAR.language.get('AOR_Fields', 'LBL_TOTAL');
 
-    tablebody = document.createElement("tbody");
-    document.getElementById('fieldLines').appendChild(tablebody);
-
-    $('#fieldLines tbody').sortable({
-        stop: fieldSort,
-        axis: 'y',
-        containment: "#fieldLines"
-    });
+    var k=x.insertCell(11);
+    k.innerHTML=SUGAR.language.get('AOR_Fields', 'LBL_SELECT_SQL');
 }
 
 function insertFieldLine(){
@@ -282,7 +303,10 @@ function insertFieldLine(){
         document.getElementById('fieldLines_head').style.display = '';
     }
 
-    tablebody = document.getElementById('fieldLines').getElementsByTagName('tbody')[0];
+
+    tablebody = document.createElement("tbody");
+    tablebody.id = "aor_fields_body" + fieldln;
+    document.getElementById('fieldLines').appendChild(tablebody);
 
     var x = tablebody.insertRow(-1);
     x.id = 'field_line' + fieldln;
@@ -344,9 +368,14 @@ function insertFieldLine(){
     i.innerHTML = "<select type='text' name='aor_fields_format["+ fieldln +"]' id='aor_fields_format" + fieldln + "' style='display:none;'>" + format_values + "</select>";
     i.style.width = '10%';
 
-    var h=x.insertCell(10);
-    h.innerHTML = "<select type='text' name='aor_fields_total["+ fieldln +"]' id='aor_fields_total" + fieldln + "'>"+total_values+"</select>";
-    h.style.width = '10%';
+    var h1=x.insertCell(10);
+    h1.innerHTML = "<select type='text' name='aor_fields_total["+ fieldln +"]' id='aor_fields_total" + fieldln + "'>"+total_values+"</select>";
+    h1.style.width = '10%';
+
+    var k=x.insertCell(11);
+    k.innerHTML = `<span class='id-ff multiple'><button type='button' onclick=\"showSqlDialog(${fieldln});\" class='button' title='Показать значение'><span class='suitepicon suitepicon-action-view'></span></button></span>
+    <input name='aor_fields_select_sql[${fieldln}]' id='aor_fields_select_sql${fieldln}' size='20' maxlength='150' value='' type='hidden'>`;
+    k.style.width = '5%';
 
     fieldln++;
     fieldln_count++;
@@ -354,10 +383,34 @@ function insertFieldLine(){
     return fieldln -1;
 }
 
+function showSqlDialog(num) {
+    var val = $(`#aor_fields_select_sql${num}`).val();
+    $('#select_sql_dialog')
+        .show()
+        .find('[name=select_sql]')
+        .val(val)
+        .data('num', num);
+}
+
+function closeSqlDialog(e) {
+    if (e.target.className === 'el-dialog__wrapper' || e.target.className.search('el-dialog__close') > -1) {
+        var el = $('#select_sql_dialog [name="select_sql"]');
+        $(`#aor_fields_select_sql${el.data('num')}`).val(el.val())
+            .prev()
+            .find('button')
+            .css(!(el.val()) ? {'opacity': '0.6'} : {'opacity': '1'});
+        $('#select_sql_dialog')
+            .hide()
+            .find('[name=select_sql]')
+            .val('')
+            .data('num', '');
+    }
+}
+
 function markFieldLineDeleted(ln)
 {
     // collapse line; update deleted value
-    document.getElementById('field_line' + ln).style.display = 'none';
+    document.getElementById('aor_fields_body' + ln).style.display = 'none';
     document.getElementById('aor_fields_deleted' + ln).value = '1';
     document.getElementById('aor_fields_delete_line' + ln).onclick = '';
 
@@ -469,7 +522,7 @@ function addNodeToFields(node){
                         'module_path_display' : node.module_path_display,
                         'field' : node.id,
                         'field_label' : node.name,
-                        'field_type' : relData.type
+                        'field_type' : relData.type,
                     });
             }
         );

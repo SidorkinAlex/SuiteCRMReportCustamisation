@@ -267,3 +267,26 @@ $(document).ready(function(){
     updateChartDimensionSelects();
   });
 });
+
+$(document).ready(function(){
+    var box = $("#content");
+    if(box.size()>0){
+        if (document.createStyleSheet){
+            document.createStyleSheet(box.childen().attr('id')+'-style.css');
+        }
+        else {
+            $("head").append($("<link rel='stylesheet' href='custom/modules/AOR_Reports/css/customButton.css' type='text/css' media='screen' />"));
+        }
+    }
+
+    $(document).ready(function () {
+        console.log('lsakjdflksjadflkjsdflk');
+        if($('div').is(".action_buttons")){
+            var buttonName=SUGAR.language.languages.AOR_Reports.LBL_SHOW_SQL;
+            var _form = document.getElementById('formDetailView');
+            var id=$('#EditView [name=record]').val();
+            var button='<a href="index.php?module=AOR_Reports&action=show_sql&record=' + id + '" class="button primary custombuttonsql" target="_blank">' + buttonName + '</a>';
+            $(".action_buttons").append(button);
+        }
+    });
+});

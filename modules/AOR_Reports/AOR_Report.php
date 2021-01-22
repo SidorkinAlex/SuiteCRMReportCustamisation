@@ -367,6 +367,273 @@ class AOR_Report extends Basic
         throw new Exception('incorrect state');
     }
 
+    public function Sql_show($offset = -1, $links = true, $level = 2, $path = array())
+    {
+        global $beanList;
+
+        $rows = $this->getGroupDisplayFieldByReportId($this->id, $level);
+
+        if (count($rows) > 1) {
+            $GLOBALS['log']->fatal('ambiguous group display for report ' . $this->id);
+        } else {
+            if (count($rows) == 1) {
+                $rows[0]['module_path'] = unserialize(base64_decode($rows[0]['module_path']));
+                if (!$rows[0]['module_path'][0]) {
+                    $module = new $beanList[$this->report_module]();
+                    $rows[0]['field_id_name'] = $module->field_defs[$rows[0]['field']]['id_name'] ? $module->field_defs[$rows[0]['field']]['id_name'] : $module->field_defs[$rows[0]['field']]['name'];
+                    $rows[0]['module_path'][0] = $module->table_name;
+                } else {
+                    $rows[0]['field_id_name'] = $rows[0]['field'];
+                }
+                $path[] = $rows[0];
+
+                if ($level > 10) {
+                    $msg = 'Too many nested groups';
+                    $GLOBALS['log']->fatal($msg);
+
+                    return null;
+                }
+
+                return $this->buildMultiGroupReport($offset, $links, $level + 1, $path);
+            }
+            if (!$rows) {
+                if ($path) {
+                    $html = '';
+                    foreach ($path as $pth) {
+                        $_fieldIdName = $this->db->quoteIdentifier($pth['field_id_name']);
+                        $query = "SELECT $_fieldIdName FROM " . $this->db->quoteIdentifier($pth['module_path'][0]) . " GROUP BY $_fieldIdName;";
+                        $values = $this->dbSelect($query);
+
+                        foreach ($values as $value) {
+                            $moduleFieldByGroupValue = $this->getModuleFieldByGroupValue(
+                                $beanList,
+                                $value[$pth['field_id_name']]
+                            );
+                            $moduleFieldByGroupValue = $this->addDataIdValueToInnertext($moduleFieldByGroupValue);
+                            $html .= $this->getMultiGroupFrameHTML(
+                                $moduleFieldByGroupValue,
+                                $this->build_group_report_sql($offset, $links)
+                            );
+                        }
+                    }
+
+                    return $html;
+                }
+                return $this->build_group_report_sql($offset, $links, array());
+            }
+            throw new Exception('incorrect results');
+        }
+        throw new Exception('incorrect state');
+    }
+    public function build_group_report_sql($offset = -1, $links = true, $extra = array(), $subgroup = '')
+    {
+        global $beanList, $timedate, $app_strings;
+
+        $html = '';
+        $query = '';
+        $query_array = array();
+        $module = new $beanList[$this->report_module]();
+
+        $sql = "SELECT id FROM aor_fields WHERE aor_report_id = '" . $this->id . "' AND group_display = 1 AND deleted = 0 ORDER BY field_order ASC";
+        $field_id = $this->db->getOne($sql);
+
+        if (!$field_id) {
+            $query_array['select'][] = $module->table_name . ".id AS '" . $module->table_name . "_id'";
+        }
+
+        if ($field_id != '' && empty($subgroup)) {
+            $field = BeanFactory::newBean('AOR_Fields');
+            $field->retrieve($field_id);
+
+            $field_label = str_replace(' ', '_', $field->label);
+
+            $path = unserialize(base64_decode($field->module_path));
+
+            $field_module = $module;
+            $table_alias = $field_module->table_name;
+            if (!empty($path[0]) && $path[0] != $module->module_dir) {
+                foreach ($path as $rel) {
+                    $new_field_module = new $beanList[getRelatedModule($field_module->module_dir, $rel)];
+                    $oldAlias = $table_alias;
+                    $table_alias = $table_alias . ":" . $rel;
+
+                    $query_array = $this->build_report_query_join(
+                        $rel,
+                        $table_alias,
+                        $oldAlias,
+                        $field_module,
+                        'relationship',
+                        $query_array,
+                        $new_field_module
+                    );
+                    $field_module = $new_field_module;
+                }
+            }
+
+            $data = $field_module->field_defs[$field->field];
+
+            if ($data['type'] == 'relate' && isset($data['id_name'])) {
+                $field->field = $data['id_name'];
+            }
+
+            if ($data['type'] == 'currency' && !stripos(
+                    $field->field,
+                    '_USD'
+                ) && isset($field_module->field_defs['currency_id'])
+            ) {
+                if ((isset($field_module->field_defs['currency_id']['source']) && $field_module->field_defs['currency_id']['source'] == 'custom_fields')) {
+                    $query_array['select'][$table_alias . '_currency_id'] = $table_alias . '_cstm' . ".currency_id AS '" . $table_alias . "_currency_id'";
+                } else {
+                    $query_array['select'][$table_alias . '_currency_id'] = $table_alias . ".currency_id AS '" . $table_alias . "_currency_id'";
+                }
+            }
+
+            if ((isset($data['source']) && $data['source'] == 'custom_fields')) {
+                $select_field = $this->db->quoteIdentifier($table_alias . '_cstm') . '.' . $field->field;
+                // Fix for #1251 - added a missing parameter to the function call
+                $query_array = $this->build_report_query_join(
+                    $table_alias . '_cstm',
+                    $table_alias . '_cstm',
+                    $table_alias,
+                    $field_module,
+                    'custom',
+                    $query_array
+                );
+            } else {
+                $select_field = $this->db->quoteIdentifier($table_alias) . '.' . $field->field;
+            }
+
+            if ($field->sort_by != '') {
+                $query_array['sort_by'][] = $field_label . ' ' . $field->sort_by;
+            }
+
+            if ($field->format && in_array($data['type'], array('date', 'datetime', 'datetimecombo'))) {
+                if (in_array($data['type'], array('datetime', 'datetimecombo'))) {
+                    $select_field = $this->db->convert($select_field, 'add_tz_offset');
+                }
+                $select_field = $this->db->convert(
+                    $select_field,
+                    'date_format',
+                    array($timedate->getCalFormat($field->format))
+                );
+            }
+
+            if ($field->field_function != null) {
+                $select_field = $field->field_function . '(' . $select_field . ')';
+            }
+
+            $query_array['group_by'][] = $select_field;
+
+            $query_array['select'][] = $select_field . " AS '" . $field_label . "'";
+            if (isset($extra['select']) && $extra['select']) {
+                foreach ($extra['select'] as $selectField => $selectAlias) {
+                    if ($selectAlias) {
+                        $query_array['select'][] = $selectField . " AS " . $selectAlias;
+                    } else {
+                        $query_array['select'][] = $selectField;
+                    }
+                }
+            }
+            $query_array['where'][] = $select_field . " IS NOT NULL AND ";
+            if (isset($extra['where']) && $extra['where']) {
+                $query_array['where'][] = implode(' AND ', $extra['where']) . ' AND ';
+            }
+
+            $query_array = $this->build_report_query_where($query_array);
+
+            foreach ($query_array['select'] as $select) {
+                $query .= ($query == '' ? 'SELECT ' : ', ') . $select;
+            }
+
+            $query .= ' FROM ' . $module->table_name . ' ';
+
+            if (isset($query_array['join'])) {
+                foreach ($query_array['join'] as $join) {
+                    $query .= $join;
+                }
+            }
+            if (isset($query_array['where'])) {
+                $query_where = '';
+                foreach ($query_array['where'] as $where) {
+                    $query_where .= ($query_where == '' ? 'WHERE ' : ' ') . $where;
+                }
+
+                $query_where = $this->queryWhereRepair($query_where);
+
+                $query .= ' ' . $query_where;
+            }
+
+            if (isset($query_array['group_by'])) {
+                $query_group_by = '';
+                foreach ($query_array['group_by'] as $group_by) {
+                    $query_group_by .= ($query_group_by == '' ? 'GROUP BY ' : ', ') . $group_by;
+                }
+                $query .= ' ' . $query_group_by;
+            }
+
+            if (isset($query_array['sort_by'])) {
+                $query_sort_by = '';
+                foreach ($query_array['sort_by'] as $sort_by) {
+                    $query_sort_by .= ($query_sort_by == '' ? 'ORDER BY ' : ', ') . $sort_by;
+                }
+                $query .= ' ' . $query_sort_by;
+            }
+            $result = $this->db->query($query);
+
+            while ($row = $this->db->fetchByAssoc($result)) {
+                if ($html !== '') {
+                    $html .= '<br />';
+                }
+                $groupValue = $row[$field_label];
+                $groupDisplay = $this->getModuleFieldByGroupValue($beanList, $groupValue);
+                if (empty(trim($groupValue))) {
+                    $groupValue = '_empty';
+                    $groupDisplay = $app_strings['LBL_NONE'];
+                }
+
+                // Fix #5427 If download pdf then not use tab-content and add css inline to work with mpdf
+                $pdf_style = "";
+                $action = $_REQUEST['action'];
+                if ($action == 'DownloadPDF') {
+                    $pdf_style = "background: #333 !important; color: #fff !important; margin-bottom: 0px;";
+                }
+
+                $html .= '<div class="panel panel-default">
+                            <div class="panel-heading" style="' . $pdf_style . '">
+                                <a class="" role="button" data-toggle="collapse" href="#detailpanel_report_group_' . $groupValue . '" aria-expanded="false">
+                                    <div class="col-xs-10 col-sm-11 col-md-11">
+                                        ' . $groupDisplay . '
+                                    </div>
+                                </a>
+                            </div>';
+                if ($action != 'DownloadPDF') {
+                    $html .= '<div class="panel-body panel-collapse collapse in" id="detailpanel_report_group_' . $groupValue . '">
+                                <div class="tab-content">';
+                } else {
+                    $html .= '</div>';
+                }
+
+
+                global $beanList, $sugar_config;
+
+                $_group_value = $this->db->quote($groupValue);
+
+                $report_sql = $this->build_report_query($_group_value, $extra);
+                // End
+            }
+        }
+
+        if ($html == '') {
+            $_group_value = $this->db->quote($subgroup);
+
+            $report_sql = $this->build_report_query($_group_value, $extra);
+        }
+
+        return $report_sql;
+    }
+
+
+
     private function getGroupDisplayFieldByReportId($reportId = null, $level = 1)
     {
 
@@ -1312,7 +1579,12 @@ class AOR_Report extends Basic
                         'custom',
                         $query
                     );
-                } else {
+                }elseif (!empty($field->select_sql)){
+
+                    $custom_query=htmlspecialchars_decode($field->select_sql,ENT_QUOTES);
+                    $select_field = !empty($custom_query) ? '(' . $custom_query . ')' : "''";
+
+                }else {
                     $select_field = $this->db->quoteIdentifier($table_alias) . '.' . $field->field;
                 }
                 $select_field_db = $select_field;
