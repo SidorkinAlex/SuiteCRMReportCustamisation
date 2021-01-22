@@ -31,3 +31,5 @@ modules/HRPAC_VACANCY/tpl/filter.html
 nbproject/
 /vendor
 /logs/*
+/build/*
+!/build/Build.zip
